@@ -1,6 +1,8 @@
 # open-medium 🪞📄
 
-Tools to discover Medium article URLs for a user and download full PDFs via the Freedium mirror pipeline. ✨
+Discover Medium article URLs and export full PDFs via the Freedium mirror pipeline. ✨
+
+Bypass paywalls. Get any article for free. 🔓
 
 ## What’s Included 🧰
 
