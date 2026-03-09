@@ -1,0 +1,11 @@
+.env
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Output artifacts
+agent_native_articles/
+agent_native_articles_v3/
+verified/
+*_articles/
+*.pdf

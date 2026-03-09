@@ -372,15 +372,16 @@ def _verify_pdf_content(pdf_path: str) -> None:
         raise RuntimeError("Generated PDF contains betting/spam content instead of the requested article.")
 
 
-def download_and_convert_to_pdf(medium_url: str) -> bool:
+def download_and_convert_to_pdf(medium_url: str, output_dir: Optional[str] = None) -> bool:
     try:
         _mirror_url, html = _fetch_first_working_mirror_html(medium_url)
 
         article_id = _extract_article_id(medium_url)[:160]
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", article_id).strip("._-")
-        pdf_path = os.path.join(OUTPUT_DIR, f"{safe_name}.pdf")
+        resolved_output_dir = output_dir or OUTPUT_DIR
+        pdf_path = os.path.join(resolved_output_dir, f"{safe_name}.pdf")
 
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        os.makedirs(resolved_output_dir, exist_ok=True)
 
         try:
             _render_pdf_from_html_with_chrome(html, pdf_path)
