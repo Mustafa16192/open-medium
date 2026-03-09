@@ -1,15 +1,15 @@
-# open-medium
+# open-medium 🪞📄
 
-Tools to discover Medium article URLs for a user and download full PDFs via the Freedium mirror pipeline.
+Tools to discover Medium article URLs for a user and download full PDFs via the Freedium mirror pipeline. ✨
 
-## What’s Included
+## What’s Included 🧰
 
 - `medium_user_range_scraper.py`: End-to-end script that discovers a user’s articles in a date range and downloads PDFs.
 - `scraper_v3.py`: Mirror-based fetch + validation + PDF rendering pipeline.
 - `MEDIUM_USER_RANGE_SCRAPER_USAGE.md`: Detailed usage guide.
 - `SCRAPER_V3_REPLICATION_SPEC.md`: Replication spec and debugging history.
 
-## Quick Start
+## Quick Start ⚡
 
 Install Python dependencies:
 
@@ -28,7 +28,7 @@ python3 medium_user_range_scraper.py \
   --save-url-list
 ```
 
-## Recommended Local Tools
+## Recommended Local Tools 🛠️
 
 These are optional but improve reliability:
 
@@ -37,7 +37,7 @@ These are optional but improve reliability:
 - `wkhtmltopdf` (fallback renderer)
 - `cloudscraper` (optional fetch helper)
 
-## Mirror Pipeline Notes
+## Mirror Pipeline Notes 🔁
 
 The pipeline uses:
 
@@ -49,12 +49,11 @@ It validates content at multiple stages:
 2. Title-based matching to confirm the requested article
 3. PDF text validation to catch false positives
 
-## Docs
+## Docs 📚
 
 - Usage guide: `MEDIUM_USER_RANGE_SCRAPER_USAGE.md`
 - Replication spec: `SCRAPER_V3_REPLICATION_SPEC.md`
 
-## Output
+## Output 📦
 
 Generated PDFs are written to the output directory you pass in. Output artifacts are gitignored by default.
-# open-medium
