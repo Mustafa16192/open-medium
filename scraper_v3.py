@@ -1,3 +1,4 @@
+import certifi
 import html as html_lib
 import os
 import re
@@ -10,6 +11,10 @@ from typing import Iterable, Optional, Tuple
 
 import requests
 import urllib3
+
+# Ensure we use certifi's bundle for all requests
+def _get_verify():
+    return certifi.where()
 
 try:
     import cloudscraper  # type: ignore
@@ -24,7 +29,7 @@ except Exception:
 # ============= CONFIG =============
 MIRROR_BASE = "https://freedium-mirror.cfd"
 OUTPUT_DIR = "agent_native_articles"
-INPUT_FILE = "agent_native_article_urls.txt"
+INPUT_FILE = os.environ.get("SCRAPER_INPUT_FILE", "agent_native_article_urls.txt")
 
 HEADERS = {
     "User-Agent": (
@@ -301,6 +306,7 @@ def _fetch_html_with_chrome(url: str) -> str:
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
+        timeout=35,
     )
     return result.stdout
 

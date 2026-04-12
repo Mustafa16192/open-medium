@@ -1,42 +1,70 @@
-# Medium Articles to PDF Scraper
+# open-medium: Medium Articles to PDF Scraper
 
 ## Project Overview
-This project provides a Python script to make the author's own Medium articles more accessible by converting them into PDF format. It works by routing the provided Medium article URLs through an alternative service (Freedium) and then rendering the resulting page as a PDF file, complete with text and images.
+This project, "open-medium", provides a complete pipeline to discover a Medium user's articles within a specific date range and export them as full PDF files. It bypasses paywalls by routing Medium URLs through the Freedium mirror service (`freedium-mirror.cfd`), renders the resulting pages using headless Chrome (or `wkhtmltopdf` as a fallback), and provides both a CLI and a Web UI for users.
 
 **Key Features:**
-- **URL Routing:** Takes a list of Medium URLs and dynamically constructs Freedium mirror URLs to bypass access barriers and ensure accessibility.
-- **PDF Generation:** Downloads the rendered article page and saves it as a PDF. The tool primarily tries to use headless Google Chrome for high-quality rendering. If Chrome fails or isn't present, it falls back to using `wkhtmltopdf` (via `pdfkit`).
-- **Batch Processing:** Processes a hardcoded or configured list of article URLs in one go, saving all the resulting PDFs into a structured output directory (`agent_native_articles/`).
+- **URL Discovery & Routing:** Scrapes a user's profile or archive for articles within a date range and constructs Freedium mirror URLs.
+- **Validation Pipeline:** Employs multiple validation stages (HTML validation, title matching, and PDF text verification via `pdftotext`) to reject spam, bypass captchas, and ensure accuracy.
+- **PDF Generation:** High-quality PDF rendering of articles using headless Google Chrome.
+- **FastAPI Backend:** Provides REST endpoints (`/api/convert`, `/api/files`, `/api/download`) and uses Server-Sent Events (SSE) to stream scraper logs in real-time.
+- **Next.js Frontend:** A modern React-based web interface to easily input parameters (username, date range) and download the generated PDFs.
 
 ## Directory Structure
-- `scraper.py`: The main Python script that handles the downloading and PDF conversion.
-- `agent_native_article_urls.txt`: Contains URLs of the target Medium articles.
+- `medium_user_range_scraper.py`: End-to-end CLI script that coordinates the discovery and downloading of a user's articles.
+- `scraper_v3.py`: The core mirror-based fetch, validation, and PDF rendering pipeline.
+- `api.py`: FastAPI application serving the frontend and managing scraper execution.
+- `frontend/`: Next.js web application providing the user interface.
 - `requirements.txt`: Python package dependencies.
-- `agent_native_articles/`: The default output directory where the generated PDF files are saved.
+- `agent_native_articles/`: Default output directory for generated PDF files.
+- `MEDIUM_USER_RANGE_SCRAPER_USAGE.md`: Detailed usage guide for the CLI.
+- `SCRAPER_V3_REPLICATION_SPEC.md`: Replication spec and debugging history for the scraper pipeline.
 
 ## Building and Running
 
 ### Setup
-Ensure you have Python 3 installed. Install the required Python dependencies:
+Ensure you have Python 3 and Node.js installed.
 
+**Backend Dependencies:**
 ```bash
 pip install -r requirements.txt
 ```
 
-**System Dependencies:**
-To render the PDFs, the script requires a browser or rendering engine to be installed on your system:
-1. **Google Chrome / Chromium:** The script will attempt to find Chrome automatically (or you can specify its location using the `CHROME_PATH` environment variable). This is the preferred method.
-2. **wkhtmltopdf:** If Chrome is unavailable, the script will fall back to `pdfkit`, which requires `wkhtmltopdf` to be installed on your system (e.g., `brew install wkhtmltopdf` on macOS or `apt-get install wkhtmltopdf` on Debian/Ubuntu).
-
-### Usage Example
-Run the main script to start processing the articles:
-
+**Frontend Dependencies:**
 ```bash
-python3 scraper.py
+cd frontend
+npm install
 ```
 
-The script will fetch each URL, attempt the conversion, print its progress to the terminal, and save the successful `.pdf` files to the `agent_native_articles/` directory.
+**System Dependencies:**
+- Google Chrome or Chromium (highly recommended for rendering).
+- `pdftotext` (for PDF text validation).
+- `wkhtmltopdf` (as a fallback renderer).
+
+### Usage
+
+**Running the Web App:**
+1. Start the FastAPI backend:
+   ```bash
+   python3 api.py
+   ```
+2. Start the Next.js frontend:
+   ```bash
+   cd frontend
+   npm run dev
+   ```
+
+**Running via CLI:**
+```bash
+python3 medium_user_range_scraper.py \
+  --username <username> \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --output-dir agent_native_articles \
+  --save-url-list
+```
 
 ## Development Conventions
-- **Fallback Mechanisms:** The script is designed with resilience in mind. It iterates through multiple Freedium base URLs to find a working mirror and gracefully falls back between rendering engines (Chrome -> wkhtmltopdf) to maximize the chances of successful PDF generation.
-- **Environment Variables:** `FREEDIUM_BASE` can be set to override or prepend to the list of base mirror URLs. `CHROME_PATH` can be set to explicitly point to a Chrome/Chromium executable.
+- **Resilience & Validation:** The scraper explicitly validates fetched content to catch false positives or rate-limit blocks from the mirror.
+- **SSE for Logs:** Long-running scraping tasks stream their output back to the frontend using Server-Sent Events to provide real-time user feedback.
+- **Output Management:** The API automatically cleans up the output directory before starting a new conversion task to avoid mixing files.

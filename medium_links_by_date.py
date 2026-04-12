@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 import requests
 
@@ -18,6 +21,8 @@ USER_AGENT = (
     "Chrome/133.0.0.0 Safari/537.36"
 )
 TIMEOUT_SECONDS = 60
+SEARCH_RESULTS_TIMEOUT_SECONDS = 30
+RSS_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -69,6 +74,28 @@ def _get_json(url: str, *, params: dict[str, Any] | None = None) -> dict[str, An
     raise RuntimeError(f"Failed to fetch JSON from {url}") from last_error
 
 
+def _get_text(url: str, *, params: dict[str, Any] | None = None) -> str:
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    last_error: Exception | None = None
+    for target_url in (url, _build_proxy_url(url, params)):
+        try:
+            if target_url == url:
+                response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT_SECONDS)
+            else:
+                response = requests.get(target_url, headers=headers, timeout=TIMEOUT_SECONDS)
+            response.raise_for_status()
+            return response.text
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    raise RuntimeError(f"Failed to fetch text from {url}") from last_error
+
+
 def _parse_date_to_range_bounds(date_str: str, *, is_end: bool) -> int:
     day = datetime.strptime(date_str, "%Y-%m-%d").date()
     day_time = time.max if is_end else time.min
@@ -85,16 +112,136 @@ def _normalize_username(username: str) -> str:
     return normalized
 
 
+def _looks_like_handle(username: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9._-]+", username))
+
+
+def _resolve_user_from_profile(username: str) -> tuple[str, str]:
+    profile_urls = [
+        f"https://medium.com/@{username}?format=json",
+        f"https://{username}.medium.com/?format=json",
+    ]
+
+    last_error: Exception | None = None
+    for profile_url in profile_urls:
+        try:
+            data = _get_json(profile_url)
+            payload = data.get("payload") or {}
+            user = payload.get("user") or {}
+            user_id = user.get("userId")
+            canonical_username = user.get("username")
+            if not user_id or not canonical_username:
+                raise RuntimeError(f"Could not resolve Medium user for @{username}")
+            return str(user_id), str(canonical_username)
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(f"Could not resolve Medium user for @{username}: {last_error}") from last_error
+
+
+def _fetch_profile_page_text(username: str) -> str:
+    profile_url = f"http://medium.com/@{username}"
+    proxy_url = _build_proxy_url(profile_url)
+    response = requests.get(
+        proxy_url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "text/plain,text/html,application/xhtml+xml,*/*",
+        },
+        timeout=TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def _extract_profile_identity(profile_text: str) -> tuple[str | None, str | None]:
+    user_id_match = re.search(r"user_profile_page[-]+([a-f0-9]+)[-]+", profile_text, re.IGNORECASE)
+    username_match = re.search(r"URL Source:\s*https?://medium\.com/@([^\s/?#]+)", profile_text, re.IGNORECASE)
+    user_id = user_id_match.group(1) if user_id_match else None
+    canonical_username = username_match.group(1) if username_match else None
+    return user_id, canonical_username
+
+
+def _resolve_user_from_profile_page(username: str) -> tuple[str, str]:
+    profile_text = _fetch_profile_page_text(username)
+    user_id, canonical_username = _extract_profile_identity(profile_text)
+    if not user_id:
+        raise RuntimeError(f"Could not resolve Medium user for @{username} from profile page text")
+    return user_id, canonical_username or username
+
+
+def _resolve_exact_profile(username: str) -> tuple[str, str]:
+    last_error: Exception | None = None
+    for resolver in (_resolve_user_from_profile, _resolve_user_from_profile_page):
+        try:
+            return resolver(username)
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"Could not resolve Medium user for @{username}: {last_error}") from last_error
+
+
+def _search_profile_urls(query: str) -> list[str]:
+    search_url = f"https://medium.com/search?q={quote(query)}"
+    html = _get_text(search_url)
+    candidates: list[str] = []
+
+    for match in re.finditer(r'https://medium\.com/@([^/?#"\s)]+)', html, re.IGNORECASE):
+        candidates.append(match.group(1))
+
+    blocked_subdomains = {
+        "cdn",
+        "cdn-images",
+        "cdn-images-1",
+        "cdn-images-2",
+        "img",
+        "image",
+        "images",
+        "media",
+        "miro",
+        "static",
+        "stat",
+    }
+
+    for match in re.finditer(r'https://([a-z0-9-]+)\.medium\.com/?', html, re.IGNORECASE):
+        candidate = match.group(1).strip()
+        if candidate.lower() in blocked_subdomains:
+            continue
+        candidates.append(match.group(1))
+
+    unique_candidates: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        unique_candidates.append(candidate)
+
+    return unique_candidates
+
+
 def _resolve_user(username: str) -> tuple[str, str]:
-    profile_url = f"https://medium.com/@{username}?format=json"
-    data = _get_json(profile_url)
-    payload = data.get("payload") or {}
-    user = payload.get("user") or {}
-    user_id = user.get("userId")
-    canonical_username = user.get("username")
-    if not user_id or not canonical_username:
-        raise RuntimeError(f"Could not resolve Medium user for @{username}")
-    return str(user_id), str(canonical_username)
+    normalized = _normalize_username(username)
+    last_error: Exception | None = None
+
+    if _looks_like_handle(normalized):
+        try:
+            return _resolve_exact_profile(normalized)
+        except Exception as exc:
+            last_error = exc
+
+    if " " in normalized:
+        try:
+            for candidate in _search_profile_urls(normalized):
+                try:
+                    return _resolve_exact_profile(candidate)
+                except Exception as exc:
+                    last_error = exc
+                    continue
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(f"Could not resolve Medium user for {username!r}: {last_error}") from last_error
 
 
 def _coerce_publish_ms(post: dict[str, Any]) -> int | None:
@@ -107,6 +254,86 @@ def _coerce_publish_ms(post: dict[str, Any]) -> int | None:
 
 def _build_post_url(username: str, unique_slug: str) -> str:
     return f"https://medium.com/@{username}/{unique_slug}"
+
+
+def _normalize_post_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    path = parsed.path.rstrip("/")
+    if not path:
+        return ""
+    return urlunparse(("https", "medium.com", path, "", "", ""))
+
+
+def _parse_rss_publish_ms(item: ET.Element) -> int | None:
+    pub_date = item.findtext("pubDate") or item.findtext("{http://www.w3.org/2005/Atom}updated")
+    if not pub_date:
+        return None
+    try:
+        return int(parsedate_to_datetime(pub_date).astimezone(timezone.utc).timestamp() * 1000)
+    except Exception:
+        return None
+
+
+def _extract_posts_from_rss(xml_text: str) -> list[PostRecord]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    items = root.findall("./channel/item")
+    if not items:
+        items = root.findall(".//item")
+
+    out: list[PostRecord] = []
+    for item in items:
+        link = (item.findtext("link") or item.findtext("guid") or "").strip()
+        published_at_ms = _parse_rss_publish_ms(item)
+        if not link or published_at_ms is None:
+            continue
+
+        normalized_link = _normalize_post_url(link)
+        if not normalized_link:
+            continue
+
+        title = (item.findtext("title") or "").strip()
+        slug = normalized_link.rstrip("/").rsplit("/", 1)[-1]
+        out.append(
+            PostRecord(
+                post_id=slug,
+                title=title,
+                published_at_ms=published_at_ms,
+                url=normalized_link,
+            )
+        )
+
+    return out
+
+
+def _fetch_posts_from_rss(username: str) -> list[PostRecord]:
+    feed_urls = [
+        f"https://medium.com/feed/@{username}",
+        f"https://{username}.medium.com/feed",
+    ]
+
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "application/rss+xml,application/xml,text/xml,*/*",
+    }
+
+    last_error: Exception | None = None
+    for feed_url in feed_urls:
+        try:
+            response = requests.get(feed_url, headers=headers, timeout=RSS_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            posts = _extract_posts_from_rss(response.text)
+            if posts:
+                return posts
+        except Exception as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise RuntimeError(f"Failed to fetch RSS feed for @{username}: {last_error}") from last_error
+    return []
 
 
 def _extract_posts_from_payload(
@@ -158,18 +385,32 @@ def _fetch_all_posts(user_id: str, *, username: str, include_responses: bool) ->
     seen_post_ids: set[str] = set()
     results: list[PostRecord] = []
 
-    while True:
-        data = _get_json(base_url, params=params)
-        payload = data.get("payload") or {}
-        for post in _extract_posts_from_payload(payload, username=username, include_responses=include_responses):
-            if post.post_id in seen_post_ids:
-                continue
-            seen_post_ids.add(post.post_id)
-            results.append(post)
+    try:
+        while True:
+            data = _get_json(base_url, params=params)
+            payload = data.get("payload") or {}
+            for post in _extract_posts_from_payload(payload, username=username, include_responses=include_responses):
+                if post.post_id in seen_post_ids:
+                    continue
+                seen_post_ids.add(post.post_id)
+                results.append(post)
 
-        params = _get_next_params(data)
-        if not params:
-            break
+            params = _get_next_params(data)
+            if not params:
+                break
+    except Exception:
+        pass
+
+    try:
+        rss_results = _fetch_posts_from_rss(username)
+        rss_seen = {post.post_id for post in results}
+        for post in rss_results:
+            if post.post_id in rss_seen:
+                continue
+            rss_seen.add(post.post_id)
+            results.append(post)
+    except Exception:
+        pass
 
     results.sort(key=lambda item: item.published_at_ms, reverse=True)
     return results

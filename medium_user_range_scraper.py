@@ -10,10 +10,12 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 
+from medium_links_by_date import _fetch_all_posts, _filter_posts, _resolve_user
 from scraper_v3 import HEADERS, _fetch_html_with_chrome, _is_anti_bot_html, download_and_convert_to_pdf
 
 
 ARCHIVE_BASE = "https://medium.com"
+PROFILE_PROXY_BASE = "https://r.jina.ai/http://medium.com"
 
 
 @dataclass(frozen=True)
@@ -29,7 +31,7 @@ def _parse_args() -> argparse.Namespace:
             "through the Freedium mirror pipeline into an output directory."
         )
     )
-    parser.add_argument("--username", required=True, help="Medium username without @")
+    parser.add_argument("--username", required=True, help="Medium username, handle, or display name")
     parser.add_argument("--start-date", required=True, help="Inclusive start date in YYYY-MM-DD")
     parser.add_argument("--end-date", required=True, help="Inclusive end date in YYYY-MM-DD")
     parser.add_argument(
@@ -75,6 +77,10 @@ def _normalize_medium_url(url: str) -> str:
     return urlunparse(("https", "medium.com", path, "", "", ""))
 
 
+def _profile_proxy_url(username: str) -> str:
+    return f"{PROFILE_PROXY_BASE}/@{username}"
+
+
 def _fetch_html(url: str) -> str:
     last_error: Exception | None = None
 
@@ -114,11 +120,11 @@ def _fetch_html(url: str) -> str:
 
 def _extract_archive_urls(username: str, html: str) -> list[str]:
     absolute_pattern = re.compile(
-        rf"https://medium\.com/@{re.escape(username)}/[a-z0-9-]+-[0-9a-f]{{12}}(?:\?[^\"'<\\s]*)?",
+        rf"https?://medium\.com/@{re.escape(username)}/[^/?#\"'\s)]+-[0-9a-f]{{12}}(?:\?[^\"'<\\s)]*)?",
         re.IGNORECASE,
     )
     relative_pattern = re.compile(
-        rf"/@{re.escape(username)}/[a-z0-9-]+-[0-9a-f]{{12}}(?:\?[^\"'<\\s]*)?",
+        rf"/@{re.escape(username)}/[^/?#\"'\s)]+-[0-9a-f]{{12}}(?:\?[^\"'<\\s)]*)?",
         re.IGNORECASE,
     )
 
@@ -136,6 +142,77 @@ def _extract_archive_urls(username: str, html: str) -> list[str]:
     return sorted(urls)
 
 
+def _fetch_profile_page_text(username: str) -> str:
+    response = requests.get(
+        _profile_proxy_url(username),
+        headers={
+            "User-Agent": HEADERS["User-Agent"],
+            "Accept": "text/plain,text/html,application/xhtml+xml,*/*",
+        },
+        timeout=(10, 30),
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def _parse_profile_date_line(value: str, *, default_year: int) -> dt.date | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+
+    for format_string in ("%b %d, %Y", "%B %d, %Y"):
+        try:
+            parsed = dt.datetime.strptime(cleaned, format_string)
+        except ValueError:
+            continue
+        return dt.date(parsed.year, parsed.month, parsed.day)
+
+    for format_string in ("%b %d", "%B %d"):
+        try:
+            parsed = dt.datetime.strptime(f"{default_year} {cleaned}", f"%Y {format_string}")
+        except ValueError:
+            continue
+        return dt.date(parsed.year, parsed.month, parsed.day)
+
+    return None
+
+
+def _extract_profile_article_records(username: str, profile_text: str, start_date: dt.date, end_date: dt.date) -> list[ArticleRecord]:
+    lines = profile_text.splitlines()
+    url_pattern = re.compile(
+        rf"https?://medium\.com/@{re.escape(username)}/[^)\s]+",
+        re.IGNORECASE,
+    )
+
+    records: list[ArticleRecord] = []
+    seen_urls: set[str] = set()
+
+    for index, line in enumerate(lines):
+        url_match = url_pattern.search(line)
+        if not url_match:
+            continue
+
+        url = _normalize_medium_url(url_match.group(0))
+        if not url or url in seen_urls:
+            continue
+
+        published_date: dt.date | None = None
+        for offset in range(1, 8):
+            lookahead_index = index + offset
+            if lookahead_index >= len(lines):
+                break
+            published_date = _parse_profile_date_line(lines[lookahead_index], default_year=end_date.year)
+            if published_date:
+                break
+
+        if published_date and start_date <= published_date <= end_date:
+            seen_urls.add(url)
+            records.append(ArticleRecord(url=url, published_date=published_date))
+
+    records.sort(key=lambda record: (record.published_date, record.url))
+    return records
+
+
 def _extract_published_date(html: str) -> dt.date:
     patterns = (
         r'<meta[^>]+property=["\']article:published_time["\'][^>]+content=["\']([^"\']+)["\']',
@@ -151,23 +228,74 @@ def _extract_published_date(html: str) -> dt.date:
 
 
 def _discover_article_records(username: str, start_date: dt.date, end_date: dt.date) -> list[ArticleRecord]:
+    try:
+        user_id, canonical_username = _resolve_user(username)
+        print(f"-> Discovering posts via Medium API for @{canonical_username} (user id {user_id})")
+
+        start_ms = int(dt.datetime.combine(start_date, dt.time.min, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        end_ms = int(dt.datetime.combine(end_date, dt.time.max, tzinfo=dt.timezone.utc).timestamp() * 1000)
+
+        posts = _fetch_all_posts(
+            user_id,
+            username=canonical_username,
+            include_responses=False,
+        )
+        filtered_posts = _filter_posts(posts, start_ms=start_ms, end_ms=end_ms)
+
+        records = [
+            ArticleRecord(
+                url=post.url,
+                published_date=dt.datetime.fromtimestamp(post.published_at_ms / 1000, tz=dt.timezone.utc).date(),
+            )
+            for post in filtered_posts
+        ]
+        records.sort(key=lambda record: (record.published_date, record.url))
+        print(f"  Matched {len(records)} article(s) in requested date range via API")
+        if records:
+            return records
+        print("  API discovery returned 0 articles in the requested range; trying archive/profile fallbacks")
+    except Exception as api_error:
+        print(f"  API discovery failed for @{username}: {api_error}")
+        print("  Falling back to archive scraping")
+
     candidate_urls: set[str] = set()
 
     for year, month in _iter_months(start_date, end_date):
         archive = _archive_url(username, year, month)
         print(f"-> Discovering archive page: {archive}")
-        html = _fetch_html(archive)
-        found = _extract_archive_urls(username, html)
-        print(f"  Found {len(found)} candidate article URLs in {year}-{month:02d}")
-        candidate_urls.update(found)
+        try:
+            html = _fetch_html(archive)
+            found = _extract_archive_urls(username, html)
+            print(f"  Found {len(found)} candidate article URLs in {year}-{month:02d}")
+            candidate_urls.update(found)
+        except Exception as exc:
+            print(f"  Skipping archive page {archive}: {exc}")
+
+    if not candidate_urls:
+        print("  Archive discovery found no candidate URLs; trying profile-page fallback")
+        try:
+            profile_text = _fetch_profile_page_text(username)
+            profile_records = _extract_profile_article_records(username, profile_text, start_date, end_date)
+            if profile_records:
+                print(f"  Found {len(profile_records)} article(s) in profile fallback")
+                return profile_records
+
+            found = _extract_archive_urls(username, profile_text)
+            print(f"  Found {len(found)} candidate article URLs in profile fallback")
+            candidate_urls.update(found)
+        except Exception as exc:
+            print(f"  Profile page fallback failed for @{username}: {exc}")
 
     records: list[ArticleRecord] = []
     for url in sorted(candidate_urls):
         print(f"-> Inspecting article metadata: {url}")
-        html = _fetch_html(url)
-        published_date = _extract_published_date(html)
-        if start_date <= published_date <= end_date:
-            records.append(ArticleRecord(url=url, published_date=published_date))
+        try:
+            html = _fetch_html(url)
+            published_date = _extract_published_date(html)
+            if start_date <= published_date <= end_date:
+                records.append(ArticleRecord(url=url, published_date=published_date))
+        except Exception as exc:
+            print(f"  Skipping article metadata fetch for {url}: {exc}")
 
     records.sort(key=lambda record: (record.published_date, record.url))
     return records
@@ -196,7 +324,7 @@ def main() -> int:
 
     output_dir = args.output_dir or _default_output_dir(username, start_date, end_date)
 
-    print(f"Username: @{username}")
+    print(f"Account: {username}")
     print(f"Date range: {start_date.isoformat()} to {end_date.isoformat()}")
     print(f"Output dir: ./{output_dir}\n")
 

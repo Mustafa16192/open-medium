@@ -83,16 +83,18 @@ python3 medium_user_range_scraper.py \
 
 ### `--username`
 
-Medium username.
+Medium username, canonical handle, or display name.
 
 Examples:
 
 - `agentnativedev`
 - `@agentnativedev`
+- `Reza Rezvani`
 
 Notes:
 
 - The script strips a leading `@` automatically.
+- If you pass a display name instead of a handle, the script will try to resolve the canonical Medium profile first.
 - Pass only the username, not the full profile URL.
 
 ### `--start-date`
