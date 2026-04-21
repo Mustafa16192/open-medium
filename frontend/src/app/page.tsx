@@ -721,7 +721,7 @@ export default function Home() {
 
       <div className="relative z-10 mx-auto flex min-h-[calc(100vh-5rem)] max-w-6xl items-center">
         <div className="w-full max-w-3xl">
-          <div className="openmedium-wordmark flex items-end gap-1 sm:gap-1.5" aria-label="OpenMedium">
+          <div className="openmedium-wordmark flex items-baseline gap-1 sm:gap-1.5" aria-label="OpenMedium">
             <span
               className="openmedium-wordmark-text block text-[42px] font-semibold leading-none tracking-[-0.055em] sm:text-[48px]"
               style={{ fontFamily: "var(--font-wordmark-stack)" }}
@@ -729,9 +729,11 @@ export default function Home() {
               Open
             </span>
             <span
-              className="openmedium-wordmark-medium h-[27px] w-[123px] sm:h-[30px] sm:w-[136px]"
-              aria-hidden="true"
-            />
+              className="openmedium-wordmark-text block text-[42px] font-semibold leading-none tracking-[-0.055em] sm:text-[48px]"
+              style={{ fontFamily: "var(--font-wordmark-stack)" }}
+            >
+              Medium
+            </span>
           </div>
           <h1 className="mt-6 max-w-2xl text-5xl font-semibold tracking-[-0.06em] text-white sm:text-6xl lg:text-7xl">
             Get every article from any Medium profile.
