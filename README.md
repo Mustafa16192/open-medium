@@ -1,25 +1,89 @@
-# open-medium 🪞📄
+# open-medium
 
-Discover Medium article URLs and export full PDFs via the Freedium mirror pipeline. ✨
+Web app and CLI scraper for discovering Medium articles in a date range and exporting them to PDF through the Freedium mirror pipeline.
 
-Bypass paywalls. Get any article for free. 🔓
+## Project Layout
 
-## What’s Included 🧰
+- `api.py`: FastAPI backend that launches the scraper and exposes download endpoints
+- `frontend/`: Next.js app for entering a Medium profile and date range
+- `medium_user_range_scraper.py`: CLI entrypoint for direct scraping runs
+- `scraper_v3.py`: mirror fetch, validation, and PDF rendering pipeline
+- `MEDIUM_USER_RANGE_SCRAPER_USAGE.md`: CLI usage guide
+- `SCRAPER_V3_REPLICATION_SPEC.md`: pipeline behavior and debugging notes
 
-- `medium_user_range_scraper.py`: End-to-end script that discovers a user’s articles in a date range and downloads PDFs.
-- `scraper_v3.py`: Mirror-based fetch + validation + PDF rendering pipeline.
-- `MEDIUM_USER_RANGE_SCRAPER_USAGE.md`: Detailed usage guide.
-- `SCRAPER_V3_REPLICATION_SPEC.md`: Replication spec and debugging history.
+## Run The Web App
 
-## Quick Start ⚡
+### Backend
 
-Install Python dependencies:
+Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
-Run the end-to-end scraper:
+Start the API:
+
+```bash
+python3 api.py
+```
+
+Backend URL:
+
+```text
+http://127.0.0.1:8001
+```
+
+API docs:
+
+```text
+http://127.0.0.1:8001/docs
+```
+
+If your Python environment is running under Rosetta on Apple Silicon, use:
+
+```bash
+arch -arm64 python3 api.py
+```
+
+### Frontend
+
+In a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend URL:
+
+```text
+http://localhost:3000
+```
+
+If the backend runs on a different port:
+
+```bash
+cd frontend
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8002 npm run dev
+```
+
+If the backend needs a different port:
+
+```bash
+UVICORN_HOST=127.0.0.1 UVICORN_PORT=8002 python3 api.py
+```
+
+## Use The UI
+
+- paste a Medium profile URL or handle
+- choose a start and end date
+- run the conversion
+- download the resulting PDFs or the ZIP archive
+
+## Run The CLI Scraper
+
+Use this if you want direct terminal scraping without the web app:
 
 ```bash
 python3 medium_user_range_scraper.py \
@@ -30,32 +94,24 @@ python3 medium_user_range_scraper.py \
   --save-url-list
 ```
 
-## Recommended Local Tools 🛠️
+## API Endpoints
 
-These are optional but improve reliability:
+- `POST /api/convert`
+- `GET /api/files`
+- `GET /api/download/{filename}`
+- `GET /api/download-all`
 
-- Google Chrome or Chromium (used for PDF rendering and browser fallback fetch)
-- `pdftotext` (verifies output PDFs and removes spam outputs)
-- `wkhtmltopdf` (fallback renderer)
-- `cloudscraper` (optional fetch helper)
+## Output
 
-## Mirror Pipeline Notes 🔁
+Generated PDFs are written to the output directory you pass in. The web app defaults to `agent_native_articles/`.
 
-The pipeline uses:
+## Generated Files
 
-- `https://freedium-mirror.cfd` only
+Keep these out of commits:
 
-It validates content at multiple stages:
-
-1. HTML validation to reject spam/landing pages
-2. Title-based matching to confirm the requested article
-3. PDF text validation to catch false positives
-
-## Docs 📚
-
-- Usage guide: `MEDIUM_USER_RANGE_SCRAPER_USAGE.md`
-- Replication spec: `SCRAPER_V3_REPLICATION_SPEC.md`
-
-## Output 📦
-
-Generated PDFs are written to the output directory you pass in. Output artifacts are gitignored by default.
+- `agent_native_articles/`
+- `agent_native_articles_v3/`
+- `verified/`
+- `tmp_test/`
+- `frontend/.next/`
+- `frontend/node_modules/`

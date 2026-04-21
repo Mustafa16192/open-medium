@@ -2,10 +2,13 @@
 .DS_Store
 __pycache__/
 *.py[cod]
+frontend/.next/
+frontend/node_modules/
 
 # Output artifacts
 agent_native_articles/
 agent_native_articles_v3/
 verified/
+tmp_test/
 *_articles/
 *.pdf
