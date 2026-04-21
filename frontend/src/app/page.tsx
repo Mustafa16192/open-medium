@@ -31,7 +31,7 @@ type LogEntry = {
 const INITIAL_RUN_STATE: RunState = {
   stage: "idle",
   stageLabel: "Ready",
-  stageDescription: "Enter a Medium profile link and date range to begin.",
+  stageDescription: "Enter a Medium profile or writer link and date range to begin.",
   progress: 0,
   discovered: null,
   saved: 0,
@@ -226,14 +226,14 @@ function prettyFileName(file: string): string {
   return file.replace(/\.pdf$/i, "").replace(/-/g, " ");
 }
 
-function extractMediumHandle(value: string): string | null {
+function extractMediumIdentifier(value: string): string | null {
   const raw = value.trim();
   if (!raw) return null;
 
-  // Allow plain handles to continue working.
+  // Allow plain handles and raw writer IDs to continue working.
   if (!raw.includes("medium.com") && !/^https?:\/\//i.test(raw)) {
-    const handle = raw.replace(/^@/, "").replace(/\s+/g, "");
-    return handle || null;
+    const identifier = raw.replace(/^@/, "").replace(/\s+/g, "");
+    return identifier || null;
   }
 
   const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
@@ -247,6 +247,15 @@ function extractMediumHandle(value: string): string | null {
       if (segments[0]?.startsWith("@")) {
         const handle = segments[0].slice(1).trim();
         return handle || null;
+      }
+
+      if (
+        segments[0] === "me" &&
+        segments[1] === "following-feed" &&
+        segments[2] === "writers" &&
+        /^[a-f0-9]{12,}$/i.test(segments[3] ?? "")
+      ) {
+        return segments[3];
       }
     }
 
@@ -393,10 +402,10 @@ export default function Home() {
   const handleStart = async (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
 
-    const cleanUsername = extractMediumHandle(profileInput);
+    const cleanUsername = extractMediumIdentifier(profileInput);
 
     if (!cleanUsername) {
-      toast.error("Enter a valid Medium profile link or handle.");
+      toast.error("Enter a valid Medium profile link, writer link, or handle.");
       return;
     }
 
@@ -410,12 +419,14 @@ export default function Home() {
       return;
     }
 
+    const targetLabel = /^[a-f0-9]{12,}$/i.test(cleanUsername) ? cleanUsername : `@${cleanUsername}`;
+
     setIsProcessing(true);
     setFiles([]);
     setLogs([
       {
         id: Date.now().toString(),
-        text: `Starting run for @${cleanUsername} from ${startDate} to ${endDate}.`,
+        text: `Starting run for ${targetLabel} from ${startDate} to ${endDate}.`,
         type: "info",
       },
     ]);
@@ -584,7 +595,7 @@ export default function Home() {
           className="h-16 rounded-full border-white/24 bg-white/[0.06] px-6 text-base text-white placeholder:text-white/30 focus-visible:ring-4 focus-visible:ring-white/15"
         />
         <p className="text-sm leading-6 text-white/58">
-          Paste the Medium profile link you want to export. Handles like <span className="font-mono text-white/76">@agentnativedev</span> still work.
+          Paste a Medium profile link, writer link, or handle.
         </p>
       </div>
 
@@ -712,7 +723,7 @@ export default function Home() {
         <div className="w-full max-w-3xl">
           <div className="openmedium-wordmark flex items-end gap-1 sm:gap-1.5" aria-label="OpenMedium">
             <span
-              className="openmedium-wordmark-text text-[30px] font-semibold leading-[0.88] tracking-[-0.045em] sm:text-[34px]"
+              className="openmedium-wordmark-text block text-[42px] font-semibold leading-none tracking-[-0.055em] sm:text-[48px]"
               style={{ fontFamily: "var(--font-wordmark-stack)" }}
             >
               Open

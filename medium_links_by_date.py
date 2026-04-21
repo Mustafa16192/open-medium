@@ -116,6 +116,70 @@ def _looks_like_handle(username: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9._-]+", username))
 
 
+def _looks_like_user_id(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Fa-f0-9]{12,}", value))
+
+
+def _parse_possible_medium_url(value: str):
+    raw = value.strip()
+    if not raw:
+        return None
+    if "medium.com" not in raw.lower() and not raw.lower().startswith("http"):
+        return None
+    candidate = raw if re.match(r"^https?://", raw, re.IGNORECASE) else f"https://{raw}"
+    try:
+        return urlparse(candidate)
+    except ValueError:
+        return None
+
+
+def _extract_medium_handle_from_url(value: str) -> str | None:
+    parsed = _parse_possible_medium_url(value)
+    if parsed is None or not parsed.hostname:
+        return None
+
+    host = parsed.hostname.lower().replace("www.", "")
+    if host == "medium.com":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if segments and segments[0].startswith("@"):
+            handle = segments[0][1:].strip()
+            if handle and _looks_like_handle(handle):
+                return handle
+
+    if host.endswith(".medium.com"):
+        subdomain = host[: -len(".medium.com")].strip()
+        if subdomain and _looks_like_handle(subdomain):
+            return subdomain
+
+    return None
+
+
+def _extract_medium_user_id(value: str) -> str | None:
+    normalized = value.strip()
+    if _looks_like_user_id(normalized):
+        return normalized.lower()
+
+    parsed = _parse_possible_medium_url(value)
+    if parsed is None or not parsed.hostname:
+        return None
+
+    host = parsed.hostname.lower().replace("www.", "")
+    if host != "medium.com":
+        return None
+
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if (
+        len(segments) >= 4
+        and segments[0] == "me"
+        and segments[1] == "following-feed"
+        and segments[2] == "writers"
+        and _looks_like_user_id(segments[3])
+    ):
+        return segments[3].lower()
+
+    return None
+
+
 def _resolve_user_from_profile(username: str) -> tuple[str, str]:
     profile_urls = [
         f"https://medium.com/@{username}?format=json",
@@ -180,6 +244,96 @@ def _resolve_exact_profile(username: str) -> tuple[str, str]:
     raise RuntimeError(f"Could not resolve Medium user for @{username}: {last_error}") from last_error
 
 
+def _extract_identity_from_profile_stream_payload(
+    data: dict[str, Any],
+    *,
+    requested_user_id: str,
+) -> tuple[str, str] | None:
+    payload = data.get("payload") or {}
+    references = payload.get("references") or {}
+    users = references.get("User") if isinstance(references, dict) else None
+
+    candidate_users: list[dict[str, Any]] = []
+    if isinstance(users, dict):
+        exact_match = users.get(requested_user_id)
+        if isinstance(exact_match, dict):
+            candidate_users.append(exact_match)
+        for candidate in users.values():
+            if isinstance(candidate, dict) and candidate not in candidate_users:
+                candidate_users.append(candidate)
+
+    direct_user = payload.get("user")
+    if isinstance(direct_user, dict) and direct_user not in candidate_users:
+        candidate_users.append(direct_user)
+
+    fallback_username: str | None = None
+    for candidate in candidate_users:
+        candidate_user_id = str(candidate.get("userId") or candidate.get("id") or "").strip().lower()
+        canonical_username = str(candidate.get("username") or "").strip()
+        if not canonical_username:
+            continue
+        if candidate_user_id == requested_user_id:
+            return requested_user_id, canonical_username
+        if fallback_username is None:
+            fallback_username = canonical_username
+
+    if fallback_username:
+        return requested_user_id, fallback_username
+    return None
+
+
+def _extract_identity_from_profile_stream_text(
+    response_text: str,
+    *,
+    requested_user_id: str,
+) -> tuple[str, str] | None:
+    escaped_user_id = re.escape(requested_user_id)
+    patterns = (
+        rf'"userId":"{escaped_user_id}".{{0,2000}}?"username":"([^"]+)"',
+        rf'"username":"([^"]+)".{{0,2000}}?"userId":"{escaped_user_id}"',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, response_text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            canonical_username = match.group(1).strip()
+            if canonical_username:
+                return requested_user_id, canonical_username
+    return None
+
+
+def _resolve_user_from_user_id(user_id: str) -> tuple[str, str]:
+    normalized_user_id = user_id.strip().lower()
+    if not _looks_like_user_id(normalized_user_id):
+        raise RuntimeError(f"Invalid Medium user id: {user_id}")
+
+    base_url = f"https://medium.com/_/api/users/{normalized_user_id}/profile/stream"
+    last_error: Exception | None = None
+
+    try:
+        data = _get_json(base_url)
+        identity = _extract_identity_from_profile_stream_payload(
+            data,
+            requested_user_id=normalized_user_id,
+        )
+        if identity:
+            return identity
+    except Exception as exc:
+        last_error = exc
+
+    try:
+        response_text = _get_text(base_url)
+        identity = _extract_identity_from_profile_stream_text(
+            response_text,
+            requested_user_id=normalized_user_id,
+        )
+        if identity:
+            return identity
+    except Exception as exc:
+        last_error = exc
+
+    raise RuntimeError(f"Could not resolve Medium user for id {user_id}: {last_error}") from last_error
+
+
 def _search_profile_urls(query: str) -> list[str]:
     search_url = f"https://medium.com/search?q={quote(query)}"
     html = _get_text(search_url)
@@ -223,6 +377,14 @@ def _search_profile_urls(query: str) -> list[str]:
 def _resolve_user(username: str) -> tuple[str, str]:
     normalized = _normalize_username(username)
     last_error: Exception | None = None
+
+    medium_handle = _extract_medium_handle_from_url(normalized)
+    if medium_handle:
+        normalized = medium_handle
+
+    medium_user_id = _extract_medium_user_id(normalized)
+    if medium_user_id:
+        return _resolve_user_from_user_id(medium_user_id)
 
     if _looks_like_handle(normalized):
         try:
